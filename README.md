@@ -41,6 +41,8 @@ ADRs (Architecture Decision Records) explain **why** I chose specific tools and 
 | [004](decisions/004-why-uv.md) | FTIP | Why uv over pip/poetry |
 | [005](decisions/005-why-async-everything.md) | FTIP | Why async across the entire stack |
 | [006](decisions/006-why-multi-stage-docker.md) | NexOps/FTIP | Why multi-stage Docker builds |
+| [007](decisions/007-why-sqlalchemy-core-for-ingestion.md) | FTIP | Why SQLAlchemy Core in ingestion vs full ORM in API |
+| [008](decisions/008-why-pydantic-settings.md) | FTIP | Why Pydantic Settings over os.getenv |
 
 ---
 
