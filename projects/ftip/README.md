@@ -1,112 +1,200 @@
 # FTIP — Fundamental Trading Intelligence Platform
 
-## One-Liner
-> Multi-agent AI trading research desk that ingests real macro-economic data from FRED and Alpha Vantage, exposes it through a FastAPI REST API, and uses Redis Streams as a message bus for AI agents that score currency strength.
+> Multi-service async trading research platform that ingests macro-economic data from 4 sources across 8 currencies, streams it through Redis, and exposes it via a FastAPI REST API — deployed to a homelab with full IaC and CI/CD.
 
 ## Why I Built This
 I actively trade forex. I was manually checking 32+ economic indicators across 8 currencies on different websites — central bank rates, inflation, GDP, unemployment. That's slow and error-prone. FTIP automates the data collection and will eventually use AI agents to score currency strength and flag opportunities.
 
-This isn't a tutorial project. The requirements come from real trading experience.
+This isn't a tutorial project. The requirements come from real trading experience. NemonixCentral was my first attempt — US-only data, monolithic, AWS Bedrock. FTIP is the redesign: 8 currencies, microservices, event-driven, cloud-native from day one.
 
-## Evolution from NemonixCentral
-NemonixCentral was my first trading tool — US-only data, monolithic architecture, AWS Bedrock for AI. FTIP is the redesign: 8 currencies instead of 1, microservices instead of monolith, event-driven agents instead of request-response AI, cloud-native deployment from day one.
+---
 
 ## Architecture
+
 ```
-FRED API ──→ Ingestion Service ──→ PostgreSQL
-Alpha Vantage ──→ Ingestion Service ──→ PostgreSQL
-                  Ingestion Service ──→ Redis Streams
-                                         ↓
-                                      AI Agents (consume streams)
-                                         ↓
-                                      Agent Outputs → PostgreSQL
-                                         ↓
-FastAPI REST API ←──────────────── PostgreSQL
+                    ┌─────────────────────────────────────────────┐
+                    │              Data Sources                    │
+                    │  FRED API · Alpha Vantage · Investing.com   │
+                    │              Bloomberg                       │
+                    └──────────────────┬──────────────────────────┘
+                                       │
+                    ┌──────────────────▼──────────────────────────┐
+                    │         Ingestion Service (async)            │
+                    │  4 independent fetch loops · release monitor │
+                    │  rate limiting · graceful shutdown            │
+                    └────┬─────────────────────┬──────────────────┘
+                         │                     │
+              ┌──────────▼──────────┐  ┌───────▼────────┐
+              │    PostgreSQL 16     │  │  Redis Streams  │
+              │  5 tables · indexes  │  │   4 streams     │
+              │  Alembic migrations  │  │  10k msg cap    │
+              └──────────▲──────────┘  └───────┬─────────┘
+                         │                     │
+              ┌──────────┴──────────┐  ┌───────▼─────────┐
+              │   FastAPI REST API   │  │   AI Agents      │
+              │  9 endpoints · async │  │  (Phase 3)       │
+              │  Pydantic v2 schemas │  │  base pattern    │
+              └─────────────────────┘  │  ready            │
+                                       └──────────────────┘
 ```
-
-## Live Demo — Deployed on Homelab
-
-**API serving real currency data:**
-
-![FTIP API returning live currency rates for 9 currencies](screenshots/api-live-currency-data.png)
-
-**FRED ingestion pipeline running — 153 records fetched and persisted:**
-
-![FRED data ingestion cycle completing successfully](screenshots/fred-ingestion-running.png)
-
-**Ansible deployment — all 4 containers healthy:**
-
-![Ansible PLAY RECAP showing successful deployment with health check passing](screenshots/ansible-deploy-success.png)
 
 ---
 
-## Infrastructure — Built with IaC
+## What It Does
 
-### Proxmox: Cloud-Init Template (VM 9000)
-Base Ubuntu 22.04 template that Terraform clones from. One template → VMs in 30 seconds instead of 20-minute manual installs.
+### API Service — 9 Endpoints
 
-![Proxmox VM 9000 hardware config — 2GB RAM, 2 cores, cloud-init drive, VirtIO SCSI](screenshots/proxmox-vm9000-template.png)
+| Endpoint | What It Returns |
+|---|---|
+| `GET /api/health` | DB + Redis connection status |
+| `GET /api/currencies/rates` | All 8 central bank interest rates with direction (hiking/cutting/hold) |
+| `GET /api/currencies/indicators/{currency}` | Latest interest rate, inflation, GDP, unemployment for one currency |
+| `GET /api/currencies/indicators` | Same as above for all 8 currencies |
+| `GET /api/forex/prices` | Latest snapshot for all 15 tracked pairs |
+| `GET /api/forex/prices/{pair}` | Latest + 24h history for a single pair (handles EUR/USD, EURUSD, EUR-USD) |
+| `GET /api/calendar?currency=USD&impact=high&days=7` | Upcoming economic events with filters |
+| `GET /api/calendar/releases` | Recent data releases with actual vs forecast values |
+| `GET /api/news?source=bloomberg&category=fx` | Latest financial news with filters |
 
-### Proxmox: Terraform Service Account (Least Privilege)
-Custom `TerraformProvisioner` role with exactly 16 privileges — not admin. Dedicated user `ftip-terraform@pve` with API token.
+**Live API returning real currency data across 9 currencies:**
 
-![Proxmox user ftip-terraform@pve](screenshots/proxmox-terraform-user.png)
+![FTIP API returning live currency rates](screenshots/api-live-currency-data.png)
 
-![TerraformProvisioner role with 16 specific privileges](screenshots/proxmox-terraform-role.png)
+### Ingestion Service — 4 Data Sources
 
-![API token for automation — privilege separation disabled, never expires](screenshots/proxmox-api-token.png)
+| Source | What It Fetches | Schedule | Details |
+|---|---|---|---|
+| **FRED** | 32 economic series (interest rates, CPI, GDP, unemployment) | Every 6 hours | 8 currencies × 4 categories. Rate-limited 1s/call. Updates central bank state with direction tracking. |
+| **Alpha Vantage** | 15 forex pairs (7 majors, 7 crosses, XAU/USD gold) | Every 5 minutes | Bid/ask/mid prices. Rate-limited under 75 req/min. |
+| **Investing.com** | Economic calendar events | Every 6 hours | Zyte browser rendering to bypass Cloudflare. JavaScript injection to call internal API. |
+| **Bloomberg** | Market news headlines | On demand | Zyte browser with session cookie authentication. Currency detection in 20+ codes. |
 
-### Proxmox: RBAC Assignment (Propagate enabled)
-User + Role + Assignment — all three required. Propagate checked so permissions flow to child objects.
+**FRED ingestion running — 153 records fetched and persisted in a single cycle:**
 
-![RBAC permission assignment — path /, TerraformProvisioner role, Propagate: true](screenshots/proxmox-rbac-assignment.png)
+![FRED data ingestion cycle completing](screenshots/fred-ingestion-running.png)
 
-### Terraform: VM Provisioned in 7 Seconds
-Single `terraform apply` creates the FTIP VM (ID 103) — 4GB RAM, 2 cores, 50GB disk, static IP 10.10.10.50.
+### Release Monitor
+The ingestion service includes a real-time release monitor that runs every 60 seconds. It watches for imminent high-impact economic events (within a 7-minute window), triggers a scrape when an event is due, retries up to 5 times at 30-second intervals to capture actual values, and publishes a RELEASE event to Redis when the number drops.
 
-![Terraform apply — VM 103 created in 7s with Proxmox task history showing clone operations](screenshots/terraform-vm-created.png)
+### Redis Streams — Event-Driven Architecture
+4 streams serve as the message bus between services:
 
-### AWS: ECR Container Registry
-Docker images pushed to ECR with dual tags (`:latest` + `:sha` for traceability).
-
-![AWS ECR repos — ftip-api and ftip-ingestion in ap-southeast-4](screenshots/aws-ecr-repos.png)
-
-### AWS: S3 State + Backups
-Terraform state stored remotely with DynamoDB locking. Separate bucket for DB backups.
-
-![AWS S3 — ftip-terraform-state and ftip-backups buckets](screenshots/aws-s3-buckets.png)
-
----
-
-## Infrastructure Stack
-
-| Layer | Tool | Purpose |
+| Stream | Source | Consumer (Phase 3) |
 |---|---|---|
-| VM Provisioning | Terraform (bpg/proxmox) | Create VMs from cloud-init template |
-| Server Config | Ansible | Docker, UFW, AWS CLI, user setup |
-| Secrets | Ansible Vault | Encrypted credentials in Git |
-| Deployment | Ansible + Docker Compose | Pull ECR images, template .env, health check |
-| Container Registry | AWS ECR | Docker image storage with SHA tagging |
-| State Management | AWS S3 + DynamoDB | Remote Terraform state with locking |
-| CI/CD | GitHub Actions | Build → push to ECR → deploy to homelab |
-| Firewall | OPNsense | NAT, network segmentation, WireGuard VPN |
-| Hypervisor | Proxmox VE | VM management on homelab hardware |
+| `raw_indicators` | FRED economic data | Scoring Agent |
+| `raw_prices` | Alpha Vantage forex | Pricing Agent |
+| `raw_calendar` | Investing.com events | Calendar Agent |
+| `raw_news` | Bloomberg headlines | Sentiment Agent |
+
+Each stream rotates at 10,000 messages. The agent service has an abstract base pattern ready — each agent reads from input streams, processes, writes to an output stream + PostgreSQL.
+
+---
+
+## Database Schema — 5 Tables
+
+| Table | Key Columns | Constraints |
+|---|---|---|
+| `economic_indicators` | series_id, currency, category, value (NUMERIC 20,4), observation_date | UNIQUE(series_id, observation_date). Indexes on currency, category. |
+| `forex_prices` | pair, bid_price, ask_price, price (NUMERIC 12,5), snapped_at | Index on (pair, snapped_at DESC) for time-series queries. |
+| `cb_state` | bank, currency, current_rate, previous_rate, direction | UNIQUE(bank). Tracks rate changes + direction (hiking/cutting/hold). |
+| `calendar_events` | event_datetime, currency, title, impact, actual, forecast, previous | UNIQUE(title, event_datetime). Indexes on currency, impact, datetime. |
+| `news_items` | source, headline, summary, url, category, related_currencies, published_at | UNIQUE(url). Indexes on source, category, published_at DESC. |
+
+3 Alembic migrations: initial schema → widen numeric precision for GDP values → add calendar + news tables.
+
+---
+
+## Infrastructure — Everything is Code
+
+### Deployment Pipeline
+
+```
+Push to main
+    │
+    ▼
+GitHub Actions CI
+    ├── Ruff lint + format (3 services)
+    ├── MyPy type check (3 services)
+    ├── Docker image builds
+    └── Docker Compose integration test (health check)
+            │
+            ▼ (on success)
+GitHub Actions CD
+    ├── Build + push to AWS ECR (dual tags: :latest + :sha-{commit})
+    └── Deploy to homelab (self-hosted runner)
+            ├── Pull images from ECR
+            ├── docker compose up -d
+            ├── Alembic migrations
+            ├── Health check (12 retries, 5s intervals)
+            └── Automatic rollback on failure (re-tag previous images)
+```
+
+**Ansible deployment — all containers healthy, health check passing:**
+
+![Ansible PLAY RECAP showing successful deployment](screenshots/ansible-deploy-success.png)
+
+### Terraform — Proxmox + AWS
+
+**Proxmox** (homelab):
+- Cloud-init Ubuntu 22.04 template (VM 9000) — new VMs in 30 seconds
+- Custom `TerraformProvisioner` role with 16 specific privileges (not admin)
+- FTIP VM: 4GB RAM, 2 cores, 50GB disk, static IP 10.10.10.50
+
+**AWS** (ap-southeast-4 Melbourne):
+- ECR: ftip-api + ftip-ingestion repos with lifecycle policies
+- S3: Terraform state (with DynamoDB locking) + DB backups (versioned, encrypted)
+
+Both managed from the same Terraform workflow with remote state.
+
+![Terraform apply — VM 103 created in 7s](screenshots/terraform-vm-created.png)
+
+![Proxmox VM 9000 template — cloud-init ready](screenshots/proxmox-vm9000-template.png)
+
+![AWS ECR repos](screenshots/aws-ecr-repos.png) ![AWS S3 buckets](screenshots/aws-s3-buckets.png)
+
+### Ansible — Config Management + Deployment
+
+| Playbook | What It Does |
+|---|---|
+| `setup-server.yml` | Install Docker (official repo), AWS CLI v2, configure UFW (allow 22 + 8000, deny rest), create app directory |
+| `deploy-ftip.yml` | ECR login, pull images, template .env + docker-compose from Jinja2, start containers, run migrations, health check |
+
+All secrets encrypted with **Ansible Vault** — AWS keys, Postgres password, API keys. Vault file is safe in Git.
 
 ### Network Architecture
+
 ```
 Internet
     ↓
 Home Router (192.168.4.1)
     ↓
 Proxmox Host (192.168.4.93)
-    ├── vmbr0 (WAN) ── OPNsense VM 101 (192.168.4.x)
+    ├── vmbr0 (WAN) ── OPNsense VM 101
     └── vmbr1 (LAN) ── OPNsense LAN (10.10.10.1)
-                            ├── FTIP VM 103 (10.10.10.50)
+                            ├── FTIP VM 103 (10.10.10.50:8000)
                             └── WireGuard VPN (10.10.20.0/24)
 
-Traffic: Lab VM → OPNsense NAT → Home Router → Internet
-Rule: Lab → Home network BLOCKED. Lab → Internet ALLOWED.
+Firewall: Lab → Home network BLOCKED. Lab → Internet ALLOWED (via NAT).
 ```
+
+### Proxmox RBAC — Least Privilege
+
+![Proxmox user](screenshots/proxmox-terraform-user.png)
+![TerraformProvisioner role — 16 privileges](screenshots/proxmox-terraform-role.png)
+![API token — privilege separation disabled](screenshots/proxmox-api-token.png)
+![RBAC assignment — Propagate enabled](screenshots/proxmox-rbac-assignment.png)
+
+---
+
+## Docker — Multi-Stage Builds
+
+Both services follow the same pattern:
+1. **Builder stage** (`python:3.12-slim`): Install uv, sync dependencies (cached layer), copy source
+2. **Runtime stage** (`python:3.12-slim`): Copy uv + deps + app from builder, create non-root `appuser` (UID 1000), `chown` all files, run with `--no-sync`
+
+Result: small images, no build tools in production, non-root execution, fast rebuilds from cached dependency layer.
+
+Dev overrides add: hot reload, debugpy (port 5678), volume mounts, exposed DB/Redis ports.
 
 ---
 
@@ -127,138 +215,74 @@ Docker Container ──→ postgres:5432 ──→ PostgreSQL
 ```
 
 ### 2. uv Not Found in Runtime Stage
-**Symptom:** API container started but crashed immediately with `exec: "uv": executable file not found in $PATH`
-**Root cause:** Multi-stage Dockerfile copies uv binary into the builder stage via `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/`, but the runtime stage starts from a clean `python:3.12-slim` image — no uv binary exists there. The CMD `uv run uvicorn ...` fails because `uv` doesn't exist.
-**Fix:** Add `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/` to the runtime stage of both Dockerfiles. Multi-stage builds start completely fresh — nothing carries over unless explicitly COPY'd.
-**Learned:** Each `FROM` in a Dockerfile is a clean slate. If you need a tool in the final image, you must explicitly copy it — even if the builder stage had it.
-
-```
-# Builder stage                    # Runtime stage
-FROM python:3.12-slim AS builder   FROM python:3.12-slim AS runtime
-COPY --from=...uv /uv /bin/       # ← uv is NOT here!
-                                   # CMD ["uv", "run", ...] → crash
-
-# Fix: add this to runtime stage
-                                   COPY --from=...uv /uv /uvx /bin/  ✓
-```
+**Symptom:** API container crashed with `exec: "uv": executable file not found in $PATH`
+**Root cause:** Multi-stage Dockerfile copies uv into builder but runtime is a clean `python:3.12-slim`
+**Fix:** Add `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/` to the runtime stage
+**Learned:** Each `FROM` in a Dockerfile is a clean slate — nothing carries over unless explicitly COPY'd
 
 ### 3. Permission Denied + Dev Deps at Runtime
-**Symptom:** API container entered a crash loop. Logs showed `Permission denied (os error 13)` while trying to install mypy.
-**Root cause:** Two stacked issues: (1) CMD used bare `uv run` which triggers `uv sync` at runtime, attempting to install dev dependencies (mypy, ruff, pytest) into the production container. (2) The `.venv` directory was created by root in the builder stage, but the runtime stage runs as `appuser` (uid 1000) who can't write to root-owned directories.
-**Fix:** Two changes — add `RUN chown -R appuser:appuser /app` before `USER appuser` so the non-root user owns the application directory. Change CMD from `uv run` to `uv run --no-sync` so uv doesn't attempt to install/sync anything at container startup.
-**Learned:** Non-root containers need explicit ownership of copied directories. Files COPY'd from builder stages inherit root ownership. Also, `uv run` without `--no-sync` will sync dependencies on every container start — fine for development, bad for production.
-
-```
-Builder (root)                    Runtime (appuser)
-┌──────────────────┐             ┌──────────────────┐
-│ .venv/ (root:root)│  ──COPY──→ │ .venv/ (root:root)│ ← appuser can't write!
-│ app/   (root:root)│            │ app/   (root:root)│
-└──────────────────┘             └──────────────────┘
-
-Fix: RUN chown -R appuser:appuser /app  (before USER appuser)
-     CMD ["uv", "run", "--no-sync", ...]  (skip dependency sync)
-```
+**Symptom:** Crash loop with `Permission denied (os error 13)` trying to install mypy
+**Root cause:** `.venv` owned by root (from builder stage), runtime runs as `appuser`. Also `uv run` triggers sync of dev dependencies.
+**Fix:** `RUN chown -R appuser:appuser /app` before `USER appuser`. CMD uses `uv run --no-sync`.
+**Learned:** Non-root containers need explicit ownership of COPY'd directories. `uv run` without `--no-sync` syncs on every start.
 
 ### 4. Numeric Overflow on GDP Values
-**Symptom:** Ingestion service crashed during FRED persist with `NumericValueOutOfRangeError: numeric field overflow`. Zero economic data was stored — the entire batch failed because of one bad value.
-**Root cause:** The `economic_indicators.value` column was defined as `NUMERIC(12, 4)`, which can store at most 99,999,999.9999 (8 digits before the decimal). But GDP values from FRED are raw numbers — Canada's GDP came back as `587,354,750,000.0` (587 billion). That's 12 digits, overflowing the column.
-**Fix:** Created an Alembic migration to widen the column from `NUMERIC(12, 4)` to `NUMERIC(20, 4)`, which handles values up to 10^16. Updated the column type in both services' model definitions.
-**Learned:** Always check real data ranges before picking column precision. Interest rates are 0-20. CPI is 100-350. But GDP of a single country can be in the trillions. The schema was designed with percentages in mind — nobody checked what raw GDP values look like.
-
-```
-NUMERIC(12, 4)  →  max 99,999,999.9999     ← Interest rates: ✓
-                                               CPI values:    ✓
-                                               GDP (Canada):  ✗  587,354,750,000
-
-NUMERIC(20, 4)  →  max 9,999,999,999,999,999.9999  ← All values: ✓
-```
+**Symptom:** `NumericValueOutOfRangeError` — entire batch failed on one value
+**Root cause:** `NUMERIC(12, 4)` designed for percentages. Canada's GDP came back as 587,354,750,000 (12 digits).
+**Fix:** Alembic migration widening to `NUMERIC(20, 4)`
+**Learned:** Always check real data ranges before picking column precision
 
 ### 5. Six Invalid FRED Series IDs
-**Symptom:** 6 of 32 FRED API calls returned HTTP 400 Bad Request. This meant AUD and NZD were missing interest rate data (no cb_state entries for RBA and RBNZ), and several currencies had gaps in GDP and unemployment data.
-**Root cause:** The series IDs were sourced from FRED documentation and research but never validated against the actual API. FRED series get deprecated, renamed, or were never accessible via the public API. The IDs looked correct but didn't exist.
+**Symptom:** 6 of 32 FRED API calls returned HTTP 400. AUD and NZD missing interest rate data.
+**Root cause:** Series IDs from documentation were deprecated or never existed in the public API
+**Fix:** Used FRED search API to find valid replacements, verified each with real API call
+**Learned:** Always validate external API data sources with real calls before hardcoding
 
-| Failed ID | What It Was | Replacement | Source |
-|-----------|-------------|-------------|--------|
-| `RBATCTR` | RBA Cash Rate | `IRSTCI01AUM156N` | OECD Short-term Rate |
-| `NZLOCRS` | RBNZ OCR | `IRSTCI01NZM156N` | OECD Short-term Rate |
-| `AUSGDPGDPVOVCPGPQ` | Australia GDP | `NGDPRSAXDCAUQ` | OECD National Accounts |
-| `NZLRGDPEXP` | NZ GDP | `NZLGDPNQDSMEI` | OECD MEI |
-| `LRHUTTTTNZM156S` | NZ Unemployment | `LRUNTTTTNZQ156S` | OECD Labor Stats |
-| `LRHUTTTTCHM156S` | CHF Unemployment | `LMUNRRTTCHM156N` | OECD Registered Unemployment |
-
-**Fix:** Used FRED's search API (`/fred/series/search`) to find valid series for each indicator, then verified each one returns data with a direct API call before hardcoding.
-**Learned:** Always validate external API data sources with real calls before committing. Documentation and "should work" aren't the same as "does work." Especially with FRED — series IDs follow loose naming conventions and there's no guarantee a plausible-looking ID exists.
+| Failed ID | Replacement | Source |
+|---|---|---|
+| `RBATCTR` | `IRSTCI01AUM156N` | OECD Short-term Rate |
+| `NZLOCRS` | `IRSTCI01NZM156N` | OECD Short-term Rate |
+| `AUSGDPGDPVOVCPGPQ` | `NGDPRSAXDCAUQ` | OECD National Accounts |
+| `NZLRGDPEXP` | `NZLGDPNQDSMEI` | OECD MEI |
+| `LRHUTTTTNZM156S` | `LRUNTTTTNZQ156S` | OECD Labor Stats |
+| `LRHUTTTTCHM156S` | `LMUNRRTTCHM156N` | OECD Registered Unemployment |
 
 ### 6. Proxmox RBAC — User, Role, Assignment are Three Separate Things
-**Symptom:** Terraform got HTTP 403 "Permission check failed (VM.Clone)" even though the user and role both existed in Proxmox.
-**Root cause:** Created the user (`ftip-terraform@pve`) and the custom role (`TerraformProvisioner` with 16 privileges) but never **assigned** the role to the user in Datacenter → Permissions. First fix attempt also failed because "Propagate" was unchecked — permissions at path `/` didn't flow down to `/vms/9000`.
-**Fix:** Delete permission entry, re-add at path `/` with Propagate checked. Three things must exist: user, role, and the assignment connecting them.
-**Learned:** RBAC has three parts — user, role, and assignment. Missing any one breaks auth. Propagate must be checked for permissions to apply to child objects. This is identical to AWS IAM — you can create a user and a policy, but if you don't attach the policy to the user, nothing works.
-
-```
-Proxmox RBAC (same pattern as AWS IAM):
-
-  User: ftip-terraform@pve       ← exists
-  Role: TerraformProvisioner      ← exists (16 privileges)
-  Assignment: ???                  ← MISSING! 403 Forbidden
-
-  Fix: Datacenter → Permissions → Add
-       Path: /  |  User: ftip-terraform@pve  |  Role: TerraformProvisioner
-       Propagate: ✅  (without this, child objects like /vms/9000 don't inherit)
-```
+**Symptom:** Terraform 403 "Permission check failed (VM.Clone)" — user and role both existed
+**Root cause:** Never **assigned** the role to the user. First fix also failed — Propagate unchecked.
+**Fix:** Delete entry, re-add at path `/` with Propagate checked
+**Learned:** RBAC = user + role + assignment. Same as AWS IAM — policy without attachment does nothing.
 
 ### 7. OPNsense NAT Rules Missing After VM Restart
-**Symptom:** FTIP VM at 10.10.10.50 could ping gateway (10.10.10.1) but not internet (8.8.8.8). OPNsense itself could reach the internet fine.
-**Root cause:** OPNsense had been off for weeks. After unclean shutdowns during password reset, the GUI showed NAT rules configured but `pfctl -s nat` returned **nothing** — zero rules loaded in the live packet filter. Without NAT, packets left with source 10.10.10.50, and the home router had no return route.
-**Fix:** `configctl filter reload` — one command to push config into the live packet filter. Verified with `pfctl -s nat` showing the translation rule.
-**Learned:** GUI config ≠ running config. Always verify running state with CLI tools (`pfctl -s nat`, `pfctl -s rules`, `iptables -L`, `ip route`). Missing NAT has a classic symptom: outbound packets leave but replies never come back because the source IP isn't translated.
-
-```
-Without NAT:
-  10.10.10.50 → OPNsense WAN → Home Router → ???
-                                (src: 10.10.10.50)
-                                Router: "who is 10.10.10.50? I don't know that subnet"
-                                → reply dropped
-
-With NAT:
-  10.10.10.50 → OPNsense WAN → Home Router → Internet
-                (NAT: src → 192.168.4.x)
-                                Router: "I know 192.168.4.x, send reply back"
-                                → works
-```
+**Symptom:** Lab VM pinged gateway but not internet. OPNsense itself had connectivity.
+**Root cause:** GUI showed NAT rules but `pfctl -s nat` returned nothing — rules not loaded after unclean shutdowns
+**Fix:** `configctl filter reload` — one command to push config into the live packet filter
+**Learned:** GUI config ≠ running config. Always verify with CLI tools.
 
 ### 8. Terraform Disk Size Ignored During Clone
-**Symptom:** VM created with only 2.2GB disk despite `var.vm_disk_size = 50`. Ansible failed with "No space left on device" when installing Docker.
-**Root cause:** Two issues stacked. (1) Disk interface mismatch — template created with `--scsihw virtio-scsi-pci --scsi0` but Terraform had `interface = "virtio0"`. Terraform couldn't find the cloned disk at that interface so resize never applied. (2) Missing `file_format = "raw"` — bpg/proxmox provider requires this explicitly set for disk resize during clone operations.
-**Fix:** Changed `interface` to `"scsi0"` to match the template and added `file_format = "raw"`. After `terraform apply`, disk was correctly 50GB.
-**Learned:** When cloning VMs via Terraform, the disk configuration must exactly match the template's disk interface. Always verify disk size after clone with `df -h`. Template uses scsi0? Terraform must say scsi0.
-
-```
-Template VM 9000:  scsi0 → local-lvm:vm-9000-disk-0 (2.2GB)
-
-Terraform config (WRONG):
-  disk { interface = "virtio0" }   ← doesn't match template's scsi0
-  → Terraform can't find disk → resize silently skipped → VM has 2.2GB
-
-Terraform config (FIXED):
-  disk { interface = "scsi0", file_format = "raw" }   ← matches template
-  → Terraform finds disk → resize applies → VM has 50GB
-```
+**Symptom:** VM had 2.2GB disk instead of 50GB. Ansible failed "No space left on device."
+**Root cause:** Disk interface mismatch — template uses `scsi0`, Terraform had `virtio0`. Also missing `file_format = "raw"`.
+**Fix:** Match interface to `scsi0`, add `file_format = "raw"`
+**Learned:** Terraform disk config must exactly match the template's disk interface
 
 ---
 
 ## Tech Choices
-See the [Architecture Decisions](../../decisions/) folder for detailed reasoning on each choice.
 
-| Choice | Why | What I Considered Instead |
+| Choice | Why | Considered Instead |
 |---|---|---|
-| FastAPI | Async-native, Pydantic validation, auto docs | Django (too heavy), Flask (no async) |
-| SQLAlchemy 2.0 async | Type-safe ORM with async, Alembic migrations | Raw asyncpg (no ORM), Django ORM (tied to Django) |
-| Redis Streams | Persistent event streaming, already running Redis | Celery (task queue, wrong semantics), RabbitMQ (extra service) |
-| uv | 10-100x faster than pip, proper lockfiles | pip (slow), poetry (slower, complex) |
-| Docker multi-stage | Small images, cached deps, non-root user | Single-stage (bloated, insecure) |
-| Terraform | Declarative IaC for both Proxmox + AWS | Manual setup (not reproducible) |
-| Ansible + Vault | Config management with encrypted secrets | Shell scripts (fragile, no idempotency) |
+| FastAPI | Async-native, Pydantic validation, auto OpenAPI docs | Django (too heavy), Flask (no async) |
+| SQLAlchemy 2.0 async | Type-safe ORM + async, Alembic migrations | Raw asyncpg (no migrations), Django ORM |
+| Redis Streams | Persistent event streaming, lightweight message bus | Celery (task queue, wrong semantics), RabbitMQ (overkill) |
+| uv | 10-100x faster than pip, proper lockfiles, cached Docker layers | pip (slow), poetry (slower) |
+| Docker multi-stage | Small images, no build tools in prod, non-root user | Single-stage (bloated, insecure) |
+| Terraform | Declarative IaC for Proxmox + AWS from one workflow | Manual setup (not reproducible) |
+| Ansible + Vault | Idempotent config management, encrypted secrets in Git | Shell scripts (fragile, no idempotency) |
+| Custom async scheduler | Zero dependencies, independent fetch loops, graceful shutdown | APScheduler (heavy), Celery Beat (overkill for 4 tasks) |
+
+See the [Architecture Decision Records](../../decisions/) for detailed reasoning on each choice.
+
+---
 
 ## Links
 - **Repo:** github.com/emmanuelhiss/ftip
