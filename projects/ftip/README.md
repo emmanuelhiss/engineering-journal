@@ -1,6 +1,6 @@
 # FTIP — Fundamental Trading Intelligence Platform
 
-> Multi-service async trading research platform that ingests macro-economic data from 4 sources across 8 currencies, streams it through Redis, and exposes it via a FastAPI REST API — deployed to a homelab with full IaC and CI/CD.
+> Multi-service async trading research platform that ingests macro-economic data from multiple sources across 8 currencies, streams it through Redis, and exposes it via a FastAPI REST API — deployed to a homelab with full IaC and CI/CD.
 
 ## Why I Built This
 I actively trade forex. I was manually checking 32+ economic indicators across 8 currencies on different websites — central bank rates, inflation, GDP, unemployment. That's slow and error-prone. FTIP automates the data collection and will eventually use AI agents to score currency strength and flag opportunities.
@@ -15,7 +15,7 @@ This isn't a tutorial project. The requirements come from real trading experienc
                     ┌─────────────────────────────────────────────┐
                     │              Data Sources                    │
                     │  FRED API · Alpha Vantage · Investing.com   │
-                    │              Bloomberg                       │
+                    │           · Financial News APIs              │
                     └──────────────────┬──────────────────────────┘
                                        │
                     ┌──────────────────▼──────────────────────────┐
@@ -54,7 +54,7 @@ This isn't a tutorial project. The requirements come from real trading experienc
 | `GET /api/forex/prices/{pair}` | Latest + 24h history for a single pair (handles EUR/USD, EURUSD, EUR-USD) |
 | `GET /api/calendar?currency=USD&impact=high&days=7` | Upcoming economic events with filters |
 | `GET /api/calendar/releases` | Recent data releases with actual vs forecast values |
-| `GET /api/news?source=bloomberg&category=fx` | Latest financial news with filters |
+| `GET /api/news?source=financial&category=fx` | Latest financial news with filters |
 
 **Live API returning real currency data across 9 currencies:**
 
@@ -67,7 +67,7 @@ This isn't a tutorial project. The requirements come from real trading experienc
 | **FRED** | 32 economic series (interest rates, CPI, GDP, unemployment) | Every 6 hours | 8 currencies × 4 categories. Rate-limited 1s/call. Updates central bank state with direction tracking. |
 | **Alpha Vantage** | 15 forex pairs (7 majors, 7 crosses, XAU/USD gold) | Every 5 minutes | Bid/ask/mid prices. Rate-limited under 75 req/min. |
 | **Investing.com** | Economic calendar events | Every 6 hours | Zyte browser rendering to bypass Cloudflare. JavaScript injection to call internal API. |
-| **Bloomberg** | Market news headlines | On demand | Zyte browser with session cookie authentication. Currency detection in 20+ codes. |
+| **Financial News** | Market news headlines | On demand | Headless browser rendering. Automatic currency detection across 20+ codes. |
 
 **FRED ingestion running — 153 records fetched and persisted in a single cycle:**
 
@@ -84,7 +84,7 @@ The ingestion service includes a real-time release monitor that runs every 60 se
 | `raw_indicators` | FRED economic data | Scoring Agent |
 | `raw_prices` | Alpha Vantage forex | Pricing Agent |
 | `raw_calendar` | Investing.com events | Calendar Agent |
-| `raw_news` | Bloomberg headlines | Sentiment Agent |
+| `raw_news` | Financial news headlines | Sentiment Agent |
 
 Each stream rotates at 10,000 messages. The agent service has an abstract base pattern ready — each agent reads from input streams, processes, writes to an output stream + PostgreSQL.
 
