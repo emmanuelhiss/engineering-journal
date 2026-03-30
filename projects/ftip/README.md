@@ -247,47 +247,6 @@ Terraform config (FIXED):
 
 ---
 
-## Session Log — 30 March 2026 (Sessions 21-24)
-
-> Sessions 21-24 completed in a single day. FTIP deployed to homelab with full IaC pipeline.
-
-### Session 21: Terraform Proxmox VM
-- Cloud-init Ubuntu 22.04 template (VM 9000) on Proxmox
-- Dedicated Proxmox user `ftip-terraform@pve` with custom `TerraformProvisioner` role (16 privileges)
-- API token `ftip-terraform@pve!terraform` with privilege separation disabled
-- Terraform config using `bpg/proxmox` provider to provision FTIP VM (ID 103)
-- VM specs: 4GB RAM, 2 cores, 50GB disk, static IP 10.10.10.50/24 on vmbr1
-- Remote state in S3 with DynamoDB locking
-- Hard Problems solved: #6 (RBAC), #8 (Disk Size)
-
-### Pre-Session: OPNsense Fix
-- Reset forgotten root password via FreeBSD single-user mode + `opnsense-shell`
-- Fixed NAT rules not loaded into packet filter after unclean shutdowns
-- Key command: `configctl filter reload`
-- Hard Problem solved: #7 (NAT Rules Missing)
-
-### Session 22: Ansible Server Setup + Deploy
-- Ansible playbooks for server configuration and FTIP deployment
-- Docker role installing Docker Engine from official repo
-- AWS CLI v2 installation on the VM
-- UFW firewall: allow SSH (22) + API (8000), deny everything else
-- `.env` templated from Ansible Vault-encrypted variables
-- Docker images pulled from ECR, containers started with health check
-
-### Session 23: Ansible Vault Setup
-- Encrypted secrets management using Ansible Vault
-- `vault_` prefix convention for encrypted variables
-- `.vault_password` file for automatic decryption (gitignored)
-- Fixed: Postgres password auth, Alembic migration PYTHONPATH, .env template values
-
-### Session 24: GitHub Actions CD Pipeline
-- `.github/workflows/cd.yml` — triggered on push to main after CI passes
-- Job 1: Build and push Docker images to ECR with dual tags (`:latest` + `:sha`)
-- Job 2: Deploy to homelab via self-hosted runner
-- Health check with automatic rollback on failure
-
----
-
 ## Tech Choices
 See the [Architecture Decisions](../../decisions/) folder for detailed reasoning on each choice.
 
