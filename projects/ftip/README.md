@@ -260,17 +260,6 @@ See the [Architecture Decisions](../../decisions/) folder for detailed reasoning
 | Terraform | Declarative IaC for both Proxmox + AWS | Manual setup (not reproducible) |
 | Ansible + Vault | Config management with encrypted secrets | Shell scripts (fragile, no idempotency) |
 
-## Phase Progress
-
-| Phase | Status | What It Delivers |
-|---|---|---|
-| 1 — Data Foundation | ✅ Complete | FRED + AV ingestion, FastAPI, Redis Streams |
-| 2 — Ship | 🟡 In Progress | Terraform, Ansible, GitHub Actions CD, homelab deploy |
-| 3 — First Agent | ⬜ | Currency Scoring Agent + Claude API |
-| 4 — Weekly Agent Drops | ⬜ | New agent each week |
-| 5 — Observability | ⬜ | Prometheus, Grafana |
-| 6 — Portfolio + Cert | ⬜ | Polish, blog posts, AWS cert |
-
 ## Links
 - **Repo:** github.com/emmanuelhiss/ftip
 - **Decisions:** [Architecture Decision Records](../../decisions/)
