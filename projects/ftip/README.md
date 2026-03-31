@@ -1,11 +1,21 @@
 # FTIP — Fundamental Trading Intelligence Platform
 
-> Multi-service async trading research platform that ingests macro-economic data from multiple sources across 8 currencies, streams it through Redis, and exposes it via a FastAPI REST API — deployed to a homelab with full IaC and CI/CD.
+> Full-stack trading research platform — async Python backend ingesting macro-economic data from 4 sources across 8 currencies, React dashboard, Redis Streams event bus, deployed to a homelab via CI/CD with Terraform, Ansible, and Cloudflare Tunnel.
+
+**Live:** [ftip.nemonix.dev](https://ftip.nemonix.dev) | **API:** [api-ftip.nemonix.dev](https://api-ftip.nemonix.dev/api/health)
 
 ## Why I Built This
 I actively trade forex. I was manually checking 32+ economic indicators across 8 currencies on different websites — central bank rates, inflation, GDP, unemployment. That's slow and error-prone. FTIP automates the data collection and will eventually use AI agents to score currency strength and flag opportunities.
 
 This isn't a tutorial project. The requirements come from real trading experience. NemonixCentral was my first attempt — US-only data, monolithic, AWS Bedrock. FTIP is the redesign: 8 currencies, microservices, event-driven, cloud-native from day one.
+
+---
+
+## Live Dashboard
+
+React + Vite + shadcn/ui + TanStack Query. Dark mode trading interface with auto-refresh every 30 seconds. Six panels: System Health, Data Ingestion Status, Live Forex Prices, Economic Calendar, Recent News.
+
+![FTIP Dashboard at ftip.nemonix.dev — live forex prices, economic calendar, ingestion status, system health](screenshots/dashboard-live.png)
 
 ---
 
@@ -32,21 +42,33 @@ This isn't a tutorial project. The requirements come from real trading experienc
                          │                     │
               ┌──────────┴──────────┐  ┌───────▼─────────┐
               │   FastAPI REST API   │  │   AI Agents      │
-              │  9 endpoints · async │  │  (Phase 3)       │
+              │  11 endpoints · async│  │  (Phase 3)       │
               │  Pydantic v2 schemas │  │  base pattern    │
-              └─────────────────────┘  │  ready            │
-                                       └──────────────────┘
+              └──────────▲──────────┘  │  ready            │
+                         │             └──────────────────┘
+              ┌──────────┴──────────┐
+              │   React Dashboard    │
+              │  Vite · shadcn/ui    │
+              │  TanStack Query      │
+              └──────────┬──────────┘
+                         │
+              ┌──────────▼──────────┐
+              │  Cloudflare Tunnel   │
+              │  ftip.nemonix.dev    │
+              └─────────────────────┘
 ```
 
 ---
 
 ## What It Does
 
-### API Service — 9 Endpoints
+### API Service — 11 Endpoints
 
 | Endpoint | What It Returns |
 |---|---|
 | `GET /api/health` | DB + Redis connection status |
+| `GET /api/system/status` | Full system health — API, DB, Redis, uptime |
+| `GET /api/ingestion/status` | Per-source ingestion stats — last fetch time, record counts, status |
 | `GET /api/currencies/rates` | All 8 central bank interest rates with direction (hiking/cutting/hold) |
 | `GET /api/currencies/indicators/{currency}` | Latest interest rate, inflation, GDP, unemployment for one currency |
 | `GET /api/currencies/indicators` | Same as above for all 8 currencies |
@@ -54,24 +76,32 @@ This isn't a tutorial project. The requirements come from real trading experienc
 | `GET /api/forex/prices/{pair}` | Latest + 24h history for a single pair (handles EUR/USD, EURUSD, EUR-USD) |
 | `GET /api/calendar?currency=USD&impact=high&days=7` | Upcoming economic events with filters |
 | `GET /api/calendar/releases` | Recent data releases with actual vs forecast values |
-| `GET /api/news?source=financial&category=fx` | Latest financial news with filters |
-
-**Live API returning real currency data across 9 currencies:**
+| `GET /api/news?category=fx` | Latest financial news with filters |
 
 ![FTIP API returning live currency rates](screenshots/api-live-currency-data.png)
+
+### Frontend — React Dashboard
+
+| Feature | Details |
+|---|---|
+| **System Health** | API, Database, Redis status with uptime indicator |
+| **Data Ingestion Status** | Per-source: FRED (158 records), Alpha Vantage (4,121), Economic Calendar (130), News (50) — all with last fetch timestamp |
+| **Live Forex Prices** | Bid/ask/spread for all tracked pairs, updated every 30 seconds |
+| **Economic Calendar** | Next 24h events with impact levels (high/medium/low), currency, actual vs forecast |
+| **Recent News** | Financial news headlines with category tagging |
+
+Built with React + Vite, styled with shadcn/ui, data fetching via TanStack Query with 30-second auto-refresh. Served through nginx, containerized with Docker, deployed via the same CD pipeline.
 
 ### Ingestion Service — 4 Data Sources
 
 | Source | What It Fetches | Schedule | Details |
 |---|---|---|---|
-| **FRED** | 32 economic series (interest rates, CPI, GDP, unemployment) | Every 6 hours | 8 currencies × 4 categories. Rate-limited 1s/call. Updates central bank state with direction tracking. |
+| **FRED** | 32 economic series (interest rates, CPI, GDP, unemployment) | Every 6 hours | 8 currencies x 4 categories. Rate-limited 1s/call. Updates central bank state with direction tracking. |
 | **Alpha Vantage** | 15 forex pairs (7 majors, 7 crosses, XAU/USD gold) | Every 5 minutes | Bid/ask/mid prices. Rate-limited under 75 req/min. |
-| **Investing.com** | Economic calendar events | Every 6 hours | Zyte browser rendering to bypass Cloudflare. JavaScript injection to call internal API. |
+| **Investing.com** | Economic calendar events | Every 6 hours | Headless browser rendering to bypass Cloudflare. JavaScript injection to call internal API. |
 | **Financial News** | Market news headlines | On demand | Headless browser rendering. Automatic currency detection across 20+ codes. |
 
-**FRED ingestion running — 153 records fetched and persisted in a single cycle:**
-
-![FRED data ingestion cycle completing](screenshots/fred-ingestion-running.png)
+![FRED data ingestion — 153 records fetched and persisted](screenshots/fred-ingestion-running.png)
 
 ### Release Monitor
 The ingestion service includes a real-time release monitor that runs every 60 seconds. It watches for imminent high-impact economic events (within a 7-minute window), triggers a scrape when an event is due, retries up to 5 times at 30-second intervals to capture actual values, and publishes a RELEASE event to Redis when the number drops.
@@ -83,7 +113,7 @@ The ingestion service includes a real-time release monitor that runs every 60 se
 |---|---|---|
 | `raw_indicators` | FRED economic data | Scoring Agent |
 | `raw_prices` | Alpha Vantage forex | Pricing Agent |
-| `raw_calendar` | Investing.com events | Calendar Agent |
+| `raw_calendar` | Economic calendar events | Calendar Agent |
 | `raw_news` | Financial news headlines | Sentiment Agent |
 
 Each stream rotates at 10,000 messages. The agent service has an abstract base pattern ready — each agent reads from input streams, processes, writes to an output stream + PostgreSQL.
@@ -102,14 +132,21 @@ Each stream rotates at 10,000 messages. The agent service has an abstract base p
 
 3 Alembic migrations: initial schema → widen numeric precision for GDP values → add calendar + news tables.
 
+**Automated backups:** Daily at 2am UTC via cron. Script dumps PostgreSQL, compresses, uploads to S3, and prunes backups older than 30 days.
+
+![DB backup script — dump, upload to S3, cleanup](screenshots/db-backup-s3.png)
+
 ---
 
 ## Infrastructure — Everything is Code
 
-### Deployment Pipeline
+### CI/CD Pipeline
 
 ```
-Push to main
+Push to feature branch
+    │
+    ▼
+Pull Request → main (branch protection: require PR + CI checks)
     │
     ▼
 GitHub Actions CI
@@ -118,10 +155,11 @@ GitHub Actions CI
     ├── Docker image builds
     └── Docker Compose integration test (health check)
             │
-            ▼ (on success)
+            ▼ (merge to main)
 GitHub Actions CD
     ├── Build + push to AWS ECR (dual tags: :latest + :sha-{commit})
-    └── Deploy to homelab (self-hosted runner)
+    └── Deploy via self-hosted runner on homelab
+            ├── SSH into FTIP VM
             ├── Pull images from ECR
             ├── docker compose up -d
             ├── Alembic migrations
@@ -129,9 +167,27 @@ GitHub Actions CD
             └── Automatic rollback on failure (re-tag previous images)
 ```
 
-**Ansible deployment — all containers healthy, health check passing:**
+**Branch protection on `main`:** Require pull request, require CI status checks, no bypass. First PR merged:
 
-![Ansible PLAY RECAP showing successful deployment](screenshots/ansible-deploy-success.png)
+![PR #1 merged — CI passing, proper branch workflow](screenshots/github-pr-merged.png)
+
+### Self-Hosted GitHub Actions Runner
+
+The CD deploy job runs on a self-hosted runner installed directly on the homelab FTIP VM. Registered as `ftip-prod`, running as a systemd service so it persists across reboots.
+
+![GitHub Actions runner registration — connected, ftip-prod labels](screenshots/github-runner-registration.png)
+
+![Runner installed as systemd service — active (running)](screenshots/github-runner-systemd.png)
+
+### Secrets Management — Three Layers
+
+| Layer | Tool | What It Protects |
+|---|---|---|
+| **CI/CD pipeline** | GitHub Secrets | AWS keys, SSH key, deploy host |
+| **Server configuration** | Ansible Vault | Postgres password, API keys, .env values |
+| **Application runtime** | `.env` on server | DB URL, Redis URL, API keys (templated by Ansible) |
+
+![GitHub repository secrets — AWS credentials, SSH key, deploy target](screenshots/github-repo-secrets.png)
 
 ### Terraform — Proxmox + AWS
 
@@ -156,22 +212,37 @@ Both managed from the same Terraform workflow with remote state.
 
 | Playbook | What It Does |
 |---|---|
-| `setup-server.yml` | Install Docker (official repo), AWS CLI v2, configure UFW (allow 22 + 8000, deny rest), create app directory |
+| `setup-server.yml` | Install Docker, AWS CLI v2, configure UFW (allow 22 + 8000, deny rest), create app directory |
 | `deploy-ftip.yml` | ECR login, pull images, template .env + docker-compose from Jinja2, start containers, run migrations, health check |
+| `backup.yml` | Deploy backup/restore scripts, schedule daily cron at 2am UTC |
 
 All secrets encrypted with **Ansible Vault** — AWS keys, Postgres password, API keys. Vault file is safe in Git.
+
+![Ansible backup playbook — scripts deployed, cron scheduled](screenshots/ansible-backup-playbook.png)
+
+![Ansible deployment — all containers healthy](screenshots/ansible-deploy-success.png)
+
+### Cloudflare Tunnel — Public Access
+
+FTIP is publicly accessible without exposing any ports on the home network. A Cloudflare Tunnel runs as a systemd service on the FTIP VM, routing:
+- `ftip.nemonix.dev` → localhost:3000 (React dashboard)
+- `api-ftip.nemonix.dev` → localhost:8000 (FastAPI)
+
+No port forwarding, no dynamic DNS, no exposed firewall ports. Traffic goes through Cloudflare's network.
 
 ### Network Architecture
 
 ```
-Internet
-    ↓
+Internet → Cloudflare Tunnel → FTIP VM (10.10.10.50)
+                                  ├── :3000 (React dashboard / nginx)
+                                  └── :8000 (FastAPI API)
+
 Home Router (192.168.4.1)
     ↓
 Proxmox Host (192.168.4.93)
     ├── vmbr0 (WAN) ── OPNsense VM 101
     └── vmbr1 (LAN) ── OPNsense LAN (10.10.10.1)
-                            ├── FTIP VM 103 (10.10.10.50:8000)
+                            ├── FTIP VM 103 (10.10.10.50)
                             └── WireGuard VPN (10.10.20.0/24)
 
 Firewall: Lab → Home network BLOCKED. Lab → Internet ALLOWED (via NAT).
@@ -188,11 +259,11 @@ Firewall: Lab → Home network BLOCKED. Lab → Internet ALLOWED (via NAT).
 
 ## Docker — Multi-Stage Builds
 
-Both services follow the same pattern:
-1. **Builder stage** (`python:3.12-slim`): Install uv, sync dependencies (cached layer), copy source
-2. **Runtime stage** (`python:3.12-slim`): Copy uv + deps + app from builder, create non-root `appuser` (UID 1000), `chown` all files, run with `--no-sync`
+All services (API, ingestion, dashboard) follow the same pattern:
+1. **Builder stage** (`python:3.12-slim` / `node:20-alpine`): Install deps (cached layer), copy source, build
+2. **Runtime stage**: Copy only artifacts from builder, create non-root user, run with minimal footprint
 
-Result: small images, no build tools in production, non-root execution, fast rebuilds from cached dependency layer.
+Result: small images, no build tools in production, non-root execution, fast rebuilds from cached dependency layer. Dashboard served through nginx with API proxy config.
 
 Dev overrides add: hot reload, debugpy (port 5678), volume mounts, exposed DB/Redis ports.
 
@@ -272,12 +343,15 @@ Docker Container ──→ postgres:5432 ──→ PostgreSQL
 | Choice | Why | Considered Instead |
 |---|---|---|
 | FastAPI | Async-native, Pydantic validation, auto OpenAPI docs | Django (too heavy), Flask (no async) |
+| React + Vite + shadcn/ui | Fast builds, polished component library, TanStack for data fetching | Next.js (SSR overkill for dashboard), plain HTML (not maintainable) |
 | SQLAlchemy 2.0 async | Type-safe ORM + async, Alembic migrations | Raw asyncpg (no migrations), Django ORM |
 | Redis Streams | Persistent event streaming, lightweight message bus | Celery (task queue, wrong semantics), RabbitMQ (overkill) |
 | uv | 10-100x faster than pip, proper lockfiles, cached Docker layers | pip (slow), poetry (slower) |
 | Docker multi-stage | Small images, no build tools in prod, non-root user | Single-stage (bloated, insecure) |
 | Terraform | Declarative IaC for Proxmox + AWS from one workflow | Manual setup (not reproducible) |
 | Ansible + Vault | Idempotent config management, encrypted secrets in Git | Shell scripts (fragile, no idempotency) |
+| Cloudflare Tunnel | Public access without exposing ports, free TLS, no port forwarding | Nginx reverse proxy + Let's Encrypt (more config, exposed ports) |
+| Self-hosted runner | CD deploys directly to homelab, no cloud hosting needed | GitHub-hosted runner (can't reach private network) |
 | Custom async scheduler | Zero dependencies, independent fetch loops, graceful shutdown | APScheduler (heavy), Celery Beat (overkill for 4 tasks) |
 
 See the [Architecture Decision Records](../../decisions/) for detailed reasoning on each choice.
@@ -285,5 +359,7 @@ See the [Architecture Decision Records](../../decisions/) for detailed reasoning
 ---
 
 ## Links
+- **Live Dashboard:** [ftip.nemonix.dev](https://ftip.nemonix.dev)
+- **Live API:** [api-ftip.nemonix.dev](https://api-ftip.nemonix.dev/api/health)
 - **Repo:** github.com/emmanuelhiss/ftip
 - **Decisions:** [Architecture Decision Records](../../decisions/)
